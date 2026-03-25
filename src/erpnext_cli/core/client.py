@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 
 
@@ -107,6 +108,100 @@ class ERPNextClient:
             try:
                 with urllib.request.urlopen(req) as resp:
                     return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    retry_after = float(e.headers.get("Retry-After", "2.0"))
+                    if attempt == 0:
+                        time.sleep(retry_after)
+                        continue
+                    raise ERPNextRateLimitError(retry_after) from e
+                detail = extract_error_detail(e)
+                raise ERPNextAPIError(detail, status_code=e.code) from e
+            except urllib.error.URLError as e:
+                raise ERPNextAPIError(f"Connection error: {e.reason}") from e
+
+        raise ERPNextAPIError("Request failed after retry")
+
+    @staticmethod
+    def _build_multipart_body(
+        fields: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+    ) -> tuple[bytes, str]:
+        """Build a multipart/form-data body and return (body_bytes, content_type)."""
+        boundary = uuid.uuid4().hex
+        parts: list[bytes] = []
+
+        for name, value in (fields or {}).items():
+            parts.append(
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n'
+                f"\r\n"
+                f"{value}\r\n".encode("utf-8")
+            )
+
+        for field_name, (filename, data, content_type) in (files or {}).items():
+            header = (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{field_name}"; '
+                f'filename="{filename}"\r\n'
+                f"Content-Type: {content_type}\r\n"
+                f"\r\n"
+            ).encode("utf-8")
+            parts.append(header + data + b"\r\n")
+
+        parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(parts)
+        ct = f"multipart/form-data; boundary={boundary}"
+        return body, ct
+
+    def _request_multipart(
+        self,
+        path: str,
+        fields: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+    ) -> dict:
+        """POST multipart/form-data and return parsed JSON."""
+        url = f"{self.url}{path}"
+        body, content_type = self._build_multipart_body(fields, files)
+        headers = {
+            "Content-Type": content_type,
+            "Accept": "application/json",
+            "Authorization": self._auth_header,
+        }
+
+        for attempt in range(2):
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    retry_after = float(e.headers.get("Retry-After", "2.0"))
+                    if attempt == 0:
+                        time.sleep(retry_after)
+                        continue
+                    raise ERPNextRateLimitError(retry_after) from e
+                detail = extract_error_detail(e)
+                raise ERPNextAPIError(detail, status_code=e.code) from e
+            except urllib.error.URLError as e:
+                raise ERPNextAPIError(f"Connection error: {e.reason}") from e
+
+        raise ERPNextAPIError("Request failed after retry")
+
+    def _request_binary(
+        self,
+        path: str,
+    ) -> tuple[bytes, str]:
+        """GET a path and return (raw_bytes, content_type)."""
+        url = f"{self.url}{path}"
+        headers = {"Authorization": self._auth_header}
+
+        for attempt in range(2):
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    content_type = resp.headers.get("Content-Type", "application/octet-stream")
+                    return resp.read(), content_type
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     retry_after = float(e.headers.get("Retry-After", "2.0"))

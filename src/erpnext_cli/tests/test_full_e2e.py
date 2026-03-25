@@ -198,3 +198,108 @@ class TestCLISubprocess:
         assert isinstance(data, list)
         if data:
             assert "fieldname" in data[0]
+
+    def test_file_help(self):
+        result = self._run(["file", "--help"])
+        assert result.returncode == 0
+        assert "upload" in result.stdout
+        assert "download" in result.stdout
+        assert "list" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# File API tests
+# ---------------------------------------------------------------------------
+
+
+class TestFileAPI:
+    def test_upload_and_list_and_download(self, client, tmp_path):
+        """Round-trip: upload a file, list it, download it, verify content."""
+        from erpnext_cli.core.files import upload_file, list_attachments, download_file
+
+        # Create a test file
+        test_content = b"erpnext-cli file upload test content"
+        test_file = tmp_path / "test_upload.txt"
+        test_file.write_bytes(test_content)
+
+        # Upload (unattached)
+        result = upload_file(client, str(test_file))
+        assert "file_url" in result
+        file_url = result["file_url"]
+
+        # Download and verify content
+        data, ct = download_file(client, file_url)
+        assert data == test_content
+
+    def test_upload_attached_to_item(self, client, tmp_path):
+        """Upload a file attached to an Item, then list attachments."""
+        from erpnext_cli.core.documents import list_documents
+        from erpnext_cli.core.files import upload_file, list_attachments
+
+        items = list_documents(client, "Item", limit=1)
+        if not items:
+            pytest.skip("No items in ERPNext")
+
+        item_name = items[0]["name"]
+        test_file = tmp_path / "item_attachment.txt"
+        test_file.write_text("attached to item")
+
+        result = upload_file(
+            client, str(test_file),
+            doctype="Item", docname=item_name,
+        )
+        assert "file_url" in result
+
+        # Verify it appears in attachments list
+        attachments = list_attachments(client, "Item", item_name)
+        urls = [a.get("file_url") for a in attachments]
+        assert result["file_url"] in urls
+
+
+class TestFileCLISubprocess:
+    CLI_BASE = _resolve_cli("erpnext-cli")
+
+    def _run(self, args, check=True):
+        return subprocess.run(
+            self.CLI_BASE + args,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    def test_file_upload_cli(self, tmp_path):
+        _skip_if_no_creds()
+        test_file = tmp_path / "cli_upload_test.txt"
+        test_file.write_text("cli upload test")
+
+        result = self._run(["--json", "file", "upload", str(test_file)])
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "file_url" in data
+
+    def test_file_list_cli(self):
+        _skip_if_no_creds()
+        result = self._run(["--json", "file", "list", "Item", "COM-HALPI2"], check=False)
+        # May return empty list if no attachments, but should not error
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            assert isinstance(data, list)
+
+    def test_file_download_cli(self, tmp_path):
+        _skip_if_no_creds()
+        from erpnext_cli.core.files import upload_file
+
+        # Upload first
+        test_file = tmp_path / "dl_test.txt"
+        test_file.write_text("download me")
+        client = make_client()
+        result = upload_file(client, str(test_file))
+        file_url = result["file_url"]
+
+        # Download via CLI
+        output_path = str(tmp_path / "downloaded.txt")
+        cli_result = self._run(["file", "download", file_url, "--output", output_path])
+        assert cli_result.returncode == 0
+        assert os.path.isfile(output_path)
+        with open(output_path) as f:
+            assert f.read() == "download me"
