@@ -6,7 +6,7 @@ import sys
 import click
 
 from erpnext_cli.core.client import ERPNextAPIError, make_client
-from erpnext_cli.core import documents, methods, reports, schema
+from erpnext_cli.core import documents, files, methods, reports, schema
 from erpnext_cli.core.strip import strip_document
 
 
@@ -105,6 +105,9 @@ def _run_repl(ctx: CliContext) -> None:
         "schema doctypes": "List all DocTypes",
         "schema fields <DocType>": "Show DocType fields",
         "report run <name>": "Run a saved report",
+        "file upload <path> [--doctype DT --docname DN]": "Upload a file",
+        "file list <DocType> <name>": "List attachments",
+        "file download <file-url> [--output PATH]": "Download a file",
         "method call <path>": "Call a server method",
         "help": "Show this help",
         "quit / exit": "Exit the REPL",
@@ -395,6 +398,77 @@ def method_call(ctx, method_path, method_args, http_method):
         ctx.client, method_path, args=args, http_method=http_method.upper()
     )
     _output(ctx, data)
+
+
+# ---------------------------------------------------------------------------
+# file
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="file")
+def file_cmd():
+    """File upload, download, and attachment operations."""
+
+
+@file_cmd.command("upload")
+@click.argument("file_path", type=click.Path(exists=True))
+@click.option("--doctype", default=None, help="Attach to this DocType.")
+@click.option("--docname", default=None, help="Attach to this document name.")
+@click.option("--field", default=None, help="Set this field on the document to the file URL.")
+@click.option("--public", "is_public", is_flag=True, help="Upload as public (default: private).")
+@pass_ctx
+def file_upload(ctx, file_path, doctype, docname, field, is_public):
+    """Upload a local file to ERPNext."""
+    result = files.upload_file(
+        ctx.client, file_path,
+        doctype=doctype, docname=docname, is_private=not is_public,
+        field=field,
+    )
+    _output(ctx, result)
+
+
+@file_cmd.command("list")
+@click.argument("doctype")
+@click.argument("docname")
+@pass_ctx
+def file_list(ctx, doctype, docname):
+    """List files attached to a document."""
+    data = files.list_attachments(ctx.client, doctype, docname)
+
+    if ctx.json_output:
+        click.echo(json.dumps(data, indent=2, default=str))
+        return
+
+    if not data:
+        click.echo("No attachments.")
+        return
+
+    from erpnext_cli.utils.repl_skin import ReplSkin
+
+    skin = ReplSkin("erpnext")
+    headers = ["name", "file_name", "file_url", "is_private", "file_size"]
+    rows = [[str(d.get(h, "")) for h in headers] for d in data]
+    skin.table(headers, rows)
+    skin.hint(f"\n  {len(data)} attachment(s)")
+
+
+@file_cmd.command("download")
+@click.argument("file_url")
+@click.option("--output", "-o", "output_path", default=None, help="Destination file path.")
+@pass_ctx
+def file_download(ctx, file_url, output_path):
+    """Download a file by its file_url."""
+    import os
+
+    data, content_type = files.download_file(ctx.client, file_url)
+
+    if not output_path:
+        output_path = os.path.basename(file_url)
+
+    with open(output_path, "wb") as f:
+        f.write(data)
+
+    click.echo(f"Downloaded to {output_path} ({len(data)} bytes)")
 
 
 # ---------------------------------------------------------------------------

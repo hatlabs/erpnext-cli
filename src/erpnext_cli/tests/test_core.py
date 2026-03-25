@@ -21,6 +21,7 @@ from erpnext_cli.core.documents import (
     _validate_field,
 )
 from erpnext_cli.core.methods import METHOD_PATH_RE
+from erpnext_cli.core import files
 
 
 # ---------------------------------------------------------------------------
@@ -401,3 +402,202 @@ class TestMethodPathValidation:
     def test_invalid_paths(self):
         for path in ["frappe/client", "method;inject", "path with spaces"]:
             assert not METHOD_PATH_RE.match(path)
+
+
+# ---------------------------------------------------------------------------
+# client.py — multipart and binary methods
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMultipartBody:
+    def test_fields_only(self):
+        body, ct = ERPNextClient._build_multipart_body(
+            fields={"doctype": "Item", "is_private": "1"},
+        )
+        assert b"multipart/form-data" not in body  # that's in ct
+        assert ct.startswith("multipart/form-data; boundary=")
+        assert b'name="doctype"' in body
+        assert b"Item" in body
+        assert b'name="is_private"' in body
+        assert b"1" in body
+
+    def test_files_only(self):
+        body, ct = ERPNextClient._build_multipart_body(
+            files={"file": ("test.txt", b"hello world", "text/plain")},
+        )
+        assert b'name="file"' in body
+        assert b'filename="test.txt"' in body
+        assert b"Content-Type: text/plain" in body
+        assert b"hello world" in body
+
+    def test_fields_and_files(self):
+        body, ct = ERPNextClient._build_multipart_body(
+            fields={"doctype": "Item"},
+            files={"file": ("img.png", b"\x89PNG", "image/png")},
+        )
+        boundary = ct.split("boundary=")[1]
+        assert body.count(f"--{boundary}".encode()) == 3  # 2 parts + closing
+
+    def test_binary_file_data_preserved(self):
+        binary_data = bytes(range(256))
+        body, _ = ERPNextClient._build_multipart_body(
+            files={"file": ("data.bin", binary_data, "application/octet-stream")},
+        )
+        assert binary_data in body
+
+    def test_empty_body(self):
+        body, ct = ERPNextClient._build_multipart_body()
+        boundary = ct.split("boundary=")[1]
+        # Just the closing boundary
+        assert body == f"--{boundary}--\r\n".encode()
+
+
+# ---------------------------------------------------------------------------
+# files.py
+# ---------------------------------------------------------------------------
+
+
+class TestUploadFile:
+    def test_upload_calls_multipart(self, tmp_path):
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("hello")
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request_multipart = MagicMock(return_value={
+            "message": {"name": "abc123", "file_url": "/files/test.txt"}
+        })
+
+        result = files.upload_file(client, str(test_file))
+
+        client._request_multipart.assert_called_once()
+        call_args = client._request_multipart.call_args
+        assert call_args[0][0] == "/api/method/upload_file"
+        assert call_args[1]["fields"]["is_private"] == "1"
+        assert "file" in call_args[1]["files"]
+        assert result["file_url"] == "/files/test.txt"
+
+    def test_upload_with_doctype_docname(self, tmp_path):
+        test_file = tmp_path / "doc.pdf"
+        test_file.write_bytes(b"pdf content")
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request_multipart = MagicMock(return_value={"message": {"name": "x"}})
+
+        files.upload_file(client, str(test_file), doctype="Item", docname="ITEM-001")
+
+        fields = client._request_multipart.call_args[1]["fields"]
+        assert fields["doctype"] == "Item"
+        assert fields["docname"] == "ITEM-001"
+
+    def test_upload_public(self, tmp_path):
+        test_file = tmp_path / "pub.txt"
+        test_file.write_text("public")
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request_multipart = MagicMock(return_value={"message": {}})
+
+        files.upload_file(client, str(test_file), is_private=False)
+
+        fields = client._request_multipart.call_args[1]["fields"]
+        assert fields["is_private"] == "0"
+
+    def test_upload_missing_file(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        with pytest.raises(ERPNextAPIError, match="File not found"):
+            files.upload_file(client, "/nonexistent/file.txt")
+
+    def test_upload_invalid_doctype(self, tmp_path):
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("x")
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        with pytest.raises(ERPNextAPIError, match="Invalid DocType"):
+            files.upload_file(client, str(test_file), doctype="Item;DROP")
+
+    def test_upload_with_field_updates_document(self, tmp_path):
+        test_file = tmp_path / "photo.jpg"
+        test_file.write_bytes(b"jpeg data")
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request_multipart = MagicMock(return_value={
+            "message": {"name": "f1", "file_url": "/files/photo.jpg"}
+        })
+        client._request = MagicMock(return_value={
+            "data": {"name": "ITEM-001", "docstatus": 0}
+        })
+
+        result = files.upload_file(
+            client, str(test_file),
+            doctype="Item", docname="ITEM-001", field="image",
+        )
+
+        # Verify upload happened
+        client._request_multipart.assert_called_once()
+        # Verify document was updated with file_url
+        client._request.assert_called_once()
+        update_call = client._request.call_args
+        assert update_call[1]["data"] == {"data": {"image": "/files/photo.jpg"}}
+
+    def test_upload_field_without_doctype_raises(self, tmp_path):
+        test_file = tmp_path / "photo.jpg"
+        test_file.write_bytes(b"jpeg data")
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        with pytest.raises(ERPNextAPIError, match="--field requires --doctype and --docname"):
+            files.upload_file(client, str(test_file), field="image")
+
+
+class TestListAttachments:
+    def test_list_calls_request_with_filters(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request = MagicMock(return_value={
+            "data": [{"name": "f1", "file_name": "doc.pdf", "file_url": "/files/doc.pdf"}]
+        })
+
+        result = files.list_attachments(client, "Item", "ITEM-001")
+
+        client._request.assert_called_once()
+        call_args = client._request.call_args
+        assert call_args[0][0] == "/api/resource/File"
+        params = call_args[1]["params"]
+        parsed_filters = json.loads(params["filters"])
+        assert ["attached_to_doctype", "=", "Item"] in parsed_filters
+        assert ["attached_to_name", "=", "ITEM-001"] in parsed_filters
+        assert len(result) == 1
+
+    def test_list_invalid_doctype(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        with pytest.raises(ERPNextAPIError, match="Invalid DocType"):
+            files.list_attachments(client, "Item;DROP", "x")
+
+
+class TestDownloadFile:
+    def test_download_calls_binary(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request_binary = MagicMock(return_value=(b"file content", "text/plain"))
+
+        data, ct = files.download_file(client, "/files/test.txt")
+
+        client._request_binary.assert_called_once_with("/files/test.txt")
+        assert data == b"file content"
+        assert ct == "text/plain"
+
+    def test_download_private_file_url(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request_binary = MagicMock(return_value=(b"data", "image/png"))
+
+        data, ct = files.download_file(client, "/private/files/img.png")
+
+        client._request_binary.assert_called_once_with("/private/files/img.png")
+
+    def test_download_rejects_invalid_url(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+
+        with pytest.raises(ERPNextAPIError, match="Invalid file URL"):
+            files.download_file(client, "/api/method/something")
+
+    def test_download_rejects_absolute_url(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+
+        with pytest.raises(ERPNextAPIError, match="Invalid file URL"):
+            files.download_file(client, "https://evil.com/files/steal.txt")
