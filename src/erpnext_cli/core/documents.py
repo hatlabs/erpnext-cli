@@ -95,6 +95,17 @@ def update_document(
     }
 
 
+def delete_document(client: ERPNextClient, doctype: str, name: str) -> dict:
+    """Delete a document. Irreversible."""
+    _validate_doctype(doctype)
+
+    client._request(
+        f"/api/resource/{_encode_doctype(doctype)}/{urllib.parse.quote(name, safe='')}",
+        method="DELETE",
+    )
+    return {"status": "success", "doctype": doctype, "name": name}
+
+
 def submit_document(client: ERPNextClient, doctype: str, name: str) -> dict:
     """Submit a document (set docstatus=1). Irreversible."""
     return update_document(client, doctype, name, {"docstatus": 1})

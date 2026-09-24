@@ -42,9 +42,10 @@ erpnext-cli --json document get Item ITEM-001 --fields '["item_name", "item_grou
 # Get with raw output (no stripping)
 erpnext-cli --json --raw document get Item ITEM-001
 
-# Create / update
+# Create / update / delete
 erpnext-cli --json document create Item -d '{"item_code": "NEW-001", "item_name": "New Item", "item_group": "Products"}'
 erpnext-cli --json document update Item ITEM-001 -d '{"description": "Updated"}'
+erpnext-cli --json document delete "Item Price" ITEM-PRICE-0001   # irreversible
 
 # Submit / cancel
 erpnext-cli --json document submit "Sales Order" SAL-ORD-2024-00001
