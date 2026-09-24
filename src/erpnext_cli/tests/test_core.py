@@ -19,6 +19,7 @@ from erpnext_cli.core.strip import (
 from erpnext_cli.core.documents import (
     _validate_doctype,
     _validate_field,
+    delete_document,
 )
 from erpnext_cli.core.methods import METHOD_PATH_RE
 from erpnext_cli.core import files
@@ -601,3 +602,42 @@ class TestDownloadFile:
 
         with pytest.raises(ERPNextAPIError, match="Invalid file URL"):
             files.download_file(client, "https://evil.com/files/steal.txt")
+
+
+# ---------------------------------------------------------------------------
+# documents.delete_document
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteDocument:
+    def test_sends_delete_to_encoded_resource(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request = MagicMock(return_value={"message": "ok"})
+
+        result = delete_document(client, "Item Price", "abc/1 2")
+
+        client._request.assert_called_once_with(
+            "/api/resource/Item%20Price/abc%2F1%202", method="DELETE"
+        )
+        assert result == {"status": "success", "doctype": "Item Price", "name": "abc/1 2"}
+
+    def test_invalid_doctype_rejected_before_request(self):
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        client._request = MagicMock()
+
+        with pytest.raises(ERPNextAPIError, match="Invalid DocType"):
+            delete_document(client, "Item;DROP", "x")
+        client._request.assert_not_called()
+
+    def test_http_error_surfaces_server_message(self):
+        import io
+        import urllib.error
+
+        client = ERPNextClient(url="https://erp.example.com", api_key="k", api_secret="s")
+        body = json.dumps({"message": "Item Price abc not found"}).encode()
+        err = urllib.error.HTTPError(url="http://x", code=404, msg="", hdrs={}, fp=io.BytesIO(body))
+
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(ERPNextAPIError, match="not found") as exc:
+                delete_document(client, "Item Price", "abc")
+        assert exc.value.status_code == 404

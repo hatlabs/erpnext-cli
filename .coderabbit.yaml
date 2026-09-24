@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+
+language: en-GB
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_instructions:
+    - path: '**/*'
+      instructions: |
+        ## Secrets and infrastructure must not be committed
+        This repository is public. Flag any real API key, API secret, token,
+        password, hostname, domain, IP address, internal URL, or account name,
+        including in tests and README examples. Placeholders such as
+        `https://erp.example.com` are fine; real values are not.
+
+        ## Echo comments
+        Flag any comment that merely restates what the code already says.
+        Request removal, or replacement with a comment that explains *why*.
+
+    - path: 'src/**/*.py'
+      instructions: |
+        ## Library and CLI parity
+        `erpnext_cli.core` is imported as a library by other tools. Flag core
+        functions that print, exit, or read CLI state, and CLI commands that
+        call the ERPNext API directly instead of going through `core`.
+
+        ## Error handling
+        API failures must surface as `ERPNextAPIError` with the server message.
+        Flag bare `except` clauses and errors swallowed without re-raising.
+
+  tools:
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: false

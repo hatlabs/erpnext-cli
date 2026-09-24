@@ -99,6 +99,7 @@ def _run_repl(ctx: CliContext) -> None:
         "document get <DocType> <name>": "Get single document",
         "document create <DocType> -d JSON": "Create document",
         "document update <DocType> <name> -d JSON": "Update document",
+        "document delete <DocType> <name>": "Delete document (irreversible)",
         "document submit <DocType> <name>": "Submit document",
         "document cancel <DocType> <name>": "Cancel document",
         "document children <parent> <child>": "Query child table rows",
@@ -239,6 +240,16 @@ def document_update(ctx, doctype, name, data):
     """Update an existing document."""
     doc_data = json.loads(data)
     result = documents.update_document(ctx.client, doctype, name, doc_data)
+    _output(ctx, result)
+
+
+@document_cmd.command("delete")
+@click.argument("doctype")
+@click.argument("name")
+@pass_ctx
+def document_delete(ctx, doctype, name):
+    """Delete a document. Irreversible."""
+    result = documents.delete_document(ctx.client, doctype, name)
     _output(ctx, result)
 
 
