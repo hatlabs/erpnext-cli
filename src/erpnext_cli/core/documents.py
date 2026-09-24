@@ -25,6 +25,10 @@ def _encode_doctype(doctype: str) -> str:
     return urllib.parse.quote(doctype, safe="")
 
 
+def _document_path(doctype: str, name: str) -> str:
+    return f"/api/resource/{_encode_doctype(doctype)}/{urllib.parse.quote(name, safe='')}"
+
+
 def list_documents(
     client: ERPNextClient,
     doctype: str,
@@ -52,7 +56,7 @@ def get_document(client: ERPNextClient, doctype: str, name: str) -> dict:
     _validate_doctype(doctype)
 
     resp = client._request(
-        f"/api/resource/{_encode_doctype(doctype)}/{urllib.parse.quote(name, safe='')}"
+        _document_path(doctype, name)
     )
     return resp.get("data", {})
 
@@ -82,7 +86,7 @@ def update_document(
     _validate_doctype(doctype)
 
     resp = client._request(
-        f"/api/resource/{_encode_doctype(doctype)}/{urllib.parse.quote(name, safe='')}",
+        _document_path(doctype, name),
         method="PUT",
         data={"data": data},
     )
@@ -100,7 +104,7 @@ def delete_document(client: ERPNextClient, doctype: str, name: str) -> dict:
     _validate_doctype(doctype)
 
     client._request(
-        f"/api/resource/{_encode_doctype(doctype)}/{urllib.parse.quote(name, safe='')}",
+        _document_path(doctype, name),
         method="DELETE",
     )
     return {"status": "success", "doctype": doctype, "name": name}
